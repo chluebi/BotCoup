@@ -31,7 +31,8 @@ class Action:
                 possible_actions.append(Block(self.game, player, self, blocker))
 
             block = await player.wait_for_block(self, possible_actions)
-            self.game.add_history(str(block))
+            if isinstance(block, Block):
+                await self.game.add_history(TextAction(self.game, player, block))
 
             if isinstance(block, Block):
                 if await block.resolve():
@@ -50,7 +51,8 @@ class Action:
             possible_actions = [NoChallenge(self.game, player, self), Challenge(self.game, player, self)]
 
             challenge = await player.wait_for_challenge(self, possible_actions)
-            self.game.add_history(str(challenge))
+            if isinstance(challenge, Challenge):
+                await self.game.add_history(TextAction(self.game, player, challenge))
 
             if isinstance(challenge, Challenge):
                 if await challenge.resolve():
@@ -58,6 +60,20 @@ class Action:
                 else:
                     return False
         return False
+
+
+class TextAction(Action):
+
+    def __init__(self, game, author, text):
+        super().__init__(game, author)
+        self.text = text
+
+    def __str__(self):
+        return self.text
+
+    def pov(self):
+        return self.text
+
 
 class NoBlock(Action):
 
@@ -115,11 +131,11 @@ class Challenge(Action):
         
     async def resolve(self):
         if self.action.character not in self.action.author.influence:
-            self.game.add_history(f'Challenge successful: {self.action.author} does not have {self.action.character}')
+            await self.game.add_history(TextAction(self.game, self.author, f'Challenge successful: {self.action.author} does not have {self.action.character}'))
             await self.action.author.lose_influence()
             return True
         else:
-            self.game.add_history(f'Challenge unsuccessful: {self.action.author} does have {self.action.character}')
+            await self.game.add_history(TextAction(self.game, self.author, f'Challenge unsuccessful: {self.action.author} does have {self.action.character}'))
             await self.author.lose_influence()
             return False
 
@@ -212,11 +228,11 @@ class Assassinate(TargetedAction):
             return
 
         block = await self.wait_for_block(self.blockable)
+        self.author.coins -= 3
 
         if block:
             return
         
-        self.author.coins -= 3
         await self.target.lose_influence()
 
     def __str__(self):
@@ -248,7 +264,7 @@ class ExchangeFirst(Action):
         return f'{self.author} uses an Ambassador to exchange one card with the court deck'
 
     def pov(self):
-        return f'Ambassador: Exchange {self.influence[0]} with court deck.'
+        return f'Ambassador: Exchange {self.author.influence[0]} with court deck.'
 
 
 class ExchangeSecond(Action):
@@ -273,7 +289,7 @@ class ExchangeSecond(Action):
         return f'{self.author} uses an Ambassador to exchange one card with the court deck'
 
     def pov(self):
-        return f'Ambassador: Exchange {self.influence[1]} with court deck.'
+        return f'Ambassador: Exchange {self.author.influence[1]} with court deck.'
 
 
 class ExchangeBoth(Action):
@@ -301,7 +317,7 @@ class ExchangeBoth(Action):
         return f'{self.author} uses an Ambassador to exchange two cards with the court deck'
 
     def pov(self):
-        return f'Ambassador: Exchange {self.influence[0]} and {self.influence[1]} with court deck.'
+        return f'Ambassador: Exchange {self.author.influence[0]} and {self.author.influence[1]} with court deck.'
 
 
 class Steal(TargetedAction):
@@ -399,12 +415,22 @@ class Player:
     async def turn(self):
        possible_actions = self.generate_possible_actions()
        action = await self.wait_for_action(possible_actions)
-       self.game.add_history('🃏 ' + str(action))
+       await self.game.add_history(action)
        await action.resolve()
 
+    async def init(self):
+        return
+
+    async def on_action(self, action):
+        return
+
     async def lose_influence(self):
+        if len(self.influence) <= 0:
+            return
         influence = await self.wait_for_lose_influence()
-        self.game.add_history(f'💔 {self} loses {influence}')
+        if influence not in self.influence:
+            influence = random.choice(self.influence)
+        await self.game.add_history(TextAction(self.game, self, f'💔 {self} loses {influence}'))
         self.influence.remove(influence)
         return
 
@@ -434,41 +460,52 @@ class Lobby:
 
 class Game:
 
-    def __init__(self, lobby):
+    def __init__(self, lobby, print_output=False):
         self.history = []
         self.deck = copy.copy(deck)
         self.players = lobby.players
+        self.print_output = print_output
         for player in self.players:
             player.game = self
-        self.deal_influence()
-        self.add_history(str(''.join([f'{player.name}: {player.influence}\n' for player in self.players])))
+        
 
-    def deal_influence(self):
+    async def deal_influence(self):
         for player in self.players:
             for _ in range(2):
                 influence = random.choice(self.deck)
                 player.influence.append(influence)
                 player.starting_influence.append(influence)
                 self.deck.remove(influence)
+        await self.add_history(TextAction(self, self, str(''.join([f'{player.name}: {player.influence}\n' for player in self.players]))))
 
-    def add_history(self, text):
-        self.history.append(text)
-        #print(text)
+    async def add_history(self, action):
+        for player in self.players:
+            await player.on_action(action)
+        self.history.append(action)
+        if self.print_output:
+            print(type(action))
+            print(str(action))
 
     def win(self):
         players_with_influence = [player for player in self.players if len(player.influence) > 0]
         if len(players_with_influence) == 0:
             raise Exception('all players ded')
         elif len(players_with_influence) == 1:
+            self.winner = players_with_influence[0]
             return players_with_influence[0]
         else:
             return False
 
     async def run(self):
+        for player in self.players:
+            await player.init()
+
+        await self.deal_influence()
+
         self.round = 0
         while not self.win():
             self.round += 1
-            self.add_history(f'round {self.round}')
+            await self.add_history(TextAction(self, self, f'round {self.round}'))
 
             for player in self.players:
                 if len(player.influence) <= 0:
@@ -478,5 +515,4 @@ class Game:
                 if self.win():
                     break
         
-        self.winner = self.win()
-        self.add_history(f'{self.winner} won')
+        await self.add_history(TextAction(self, self, f'{self.winner} won'))
