@@ -1,4 +1,5 @@
 # BotCoup
+
 An implemention of the "Coup" Boardgame in python, meant as a way to facilitate different AI playstyles.
 
 # How to Use
